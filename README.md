@@ -1,6 +1,6 @@
 # 注意！！！
 
-develop 才是最新的代码，同步自原作者的 develop 分支.
+develop 才是最新的代码，同步自原作者的 develop 分支，但似乎该分支有点问题，所有依旧采用主分支.
 
 # flutter_openvpn
 
