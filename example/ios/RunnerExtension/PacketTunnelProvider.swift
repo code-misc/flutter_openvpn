@@ -1,5 +1,6 @@
 import NetworkExtension
 import OpenVPNAdapter
+import os.log
 
 // Extend NEPacketTunnelFlow to adopt OpenVPNAdapterPacketFlow protocol so that
 // `self.packetFlow` could be sent to `completionHandler` callback of OpenVPNAdapterDelegate
@@ -19,6 +20,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     var startHandler: ((Error?) -> Void)?
     var stopHandler: (() -> Void)?
+
+    static var connectionIndex = 0;
+    static var timeOutEnabled = true;
     
     func loadProviderManager(completion:@escaping (_ error : Error?) -> Void)  {
         
@@ -44,6 +48,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         // In our case we need providerConfiguration dictionary to retrieve content
         // of the OpenVPN configuration file. Other options related to the tunnel
         // provider also can be stored there.
+        PacketTunnelProvider.connectionIndex = PacketTunnelProvider.connectionIndex + 1;
         guard
             let protocolConfiguration = protocolConfiguration as? NETunnelProviderProtocol,
             let providerConfiguration = protocolConfiguration.providerConfiguration
@@ -57,6 +62,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let expireAt : Data? = providerConfiguration["expireAt"] as? Data? ?? nil
         let user : Data? = providerConfiguration["user"] as? Data? ?? nil
         let pass : Data? = providerConfiguration["pass"] as? Data? ?? nil
+        let timeOut : Data? = providerConfiguration["timeOut"] as? Data? ?? nil
         
 
         let configuration = OpenVPNConfiguration()
@@ -105,7 +111,21 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             guard status == .reachableViaWiFi else { return }
             self?.vpnAdapter.reconnect(afterTimeInterval: 5)
         }
-        
+        if timeOut != nil {
+            let timeOutParsedString = String(decoding: timeOut!, as: UTF8.self)
+            let timeOutParsed = Int.init(timeOutParsedString)
+            let index = PacketTunnelProvider.connectionIndex;
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(timeOutParsed!)) {
+                if !PacketTunnelProvider.timeOutEnabled || PacketTunnelProvider.connectionIndex != index {
+                    return;
+                }
+                //TODO Set your own groupIdentifier for suit name
+                UserDefaults.init(suiteName: "YOUR_GROUP_IDENTIFIER")?.setValue("TIMEOUT", forKey: "vpnStatusGroup")
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(1)) {
+                self.stopVPN()
+                }
+            }
+        }
         if expireAt != nil {
             
             var expireAtDate:Date!;
@@ -121,6 +141,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(stopInSeconds)) {
                 self.stopVPN()
+                //TODO Set your own groupIdentifier for suit name
+                UserDefaults.init(suiteName: "YOUR_GROUP_IDENTIFIER")?.setValue("EXPIRED", forKey: "vpnStatusGroup")
             }
             
             
@@ -170,12 +192,51 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
 
         // Set the network settings for the current tunneling session.
         setTunnelNetworkSettings(networkSettings, completionHandler: completionHandler)
+        _updateConnectionStatus(openVPNAdapter)
     }
-
-    // Process events returned by the OpenVPN library
-    func openVPNAdapter(_ openVPNAdapter: OpenVPNAdapter, handleEvent event: OpenVPNAdapterEvent, message: String?) {
+    
+    func _updateConnectionStatus(_ openVPNAdapter: OpenVPNAdapter) {
+        var toSave = ""
+           let formatter = DateFormatter();
+           formatter.dateFormat = "yyyy-MM-dd HH:mm:ss";
+           if openVPNAdapter.transportStatistics.lastPacketReceived != nil{
+               toSave += formatter.string(from: openVPNAdapter.transportStatistics.lastPacketReceived!)
+           }
+           toSave+="_"
+           toSave += String(openVPNAdapter.transportStatistics.packetsIn)
+           toSave+="_"
+           toSave += String(openVPNAdapter.transportStatistics.bytesIn)
+           toSave+="_"
+           toSave += String(openVPNAdapter.transportStatistics.bytesOut)
+           //TODO Set your own groupIdentifier for suit name
+           UserDefaults.init(suiteName: "YOUR_GROUP_IDENTIFIER")?.setValue(toSave, forKey: "connectionUpdate")
+    }
+    func _updateEvent(_ event: OpenVPNAdapterEvent) {
+        var toSave = ""
         switch event {
         case .connected:
+            toSave = "CONNECTED"
+        case .disconnected:
+            toSave = "DISCONNECTED"
+        case .connecting:
+            toSave = "CONNECTING"
+        case .reconnecting:
+            toSave = "RECONNECTING"
+        default:
+            toSave = "KKKKK"
+        }
+        //TODO Set your own groupIdentifier for suit name
+        UserDefaults.init(suiteName: "YOUR_GROUP_IDENTIFIER")?.setValue(toSave, forKey: "vpnStatusGroup")
+    }
+    
+    // Process events returned by the OpenVPN library
+    func openVPNAdapter(_ openVPNAdapter: OpenVPNAdapter, handleEvent event: OpenVPNAdapterEvent, message: String?) {
+        PacketTunnelProvider.timeOutEnabled = true;
+        _updateConnectionStatus(openVPNAdapter)
+        _updateEvent(event)
+        switch event {
+        case .connected:
+        PacketTunnelProvider.timeOutEnabled = false;
             if reasserting {
                 reasserting = false
             }
@@ -184,8 +245,8 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
 
             startHandler(nil)
             self.startHandler = nil
-
         case .disconnected:
+            PacketTunnelProvider.timeOutEnabled = false;
             guard let stopHandler = stopHandler else { return }
 
             if vpnReachability.isTracking {
@@ -194,26 +255,8 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
 
             stopHandler()
             self.stopHandler = nil
-
         case .reconnecting:
             reasserting = true
-        case .info:
-            var toSave = ""
-            let formatter = DateFormatter();
-            formatter.dateFormat = "yyyy-MM-dd HH:mm:ss";
-            if openVPNAdapter.transportStatistics.lastPacketReceived != nil{
-                toSave += formatter.string(from: openVPNAdapter.transportStatistics.lastPacketReceived!)
-            }
-            toSave+="_"
-            toSave += String(openVPNAdapter.transportStatistics.packetsIn)
-            toSave+="_"
-            toSave += String(openVPNAdapter.transportStatistics.bytesIn)
-            toSave+="_"
-            toSave += String(openVPNAdapter.transportStatistics.bytesOut)
-            
-            
-            UserDefaults.setValue(toSave, forKey: "iosVpnStats")
-
         default:
             break
         }
@@ -221,6 +264,7 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
 
     // Handle errors thrown by the OpenVPN library
     func openVPNAdapter(_ openVPNAdapter: OpenVPNAdapter, handleError error: Error) {
+        _updateConnectionStatus(openVPNAdapter)
         // Handle only fatal errors
         guard let fatal = (error as NSError).userInfo[OpenVPNAdapterErrorFatalKey] as? Bool, fatal == true else {
             return
@@ -240,6 +284,7 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
 
     // Use this method to process any log message returned by OpenVPN library.
     func openVPNAdapter(_ openVPNAdapter: OpenVPNAdapter, handleLogMessage logMessage: String) {
+        _updateConnectionStatus(openVPNAdapter)
         // Handle log messages
     }
 

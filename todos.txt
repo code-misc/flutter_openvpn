@@ -1,0 +1,2 @@
+connection name on android (Canadan on top)
+connectionretry after timeout android 
