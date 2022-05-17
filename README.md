@@ -1,3 +1,7 @@
+# 注意！！！
+
+develop 才是最新的代码，同步自原作者的 develop 分支.
+
 # flutter_openvpn
 
 A new Flutter plugin that uses OpenVpn.
